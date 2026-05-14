@@ -175,6 +175,41 @@ test("task runs when the active provider does not require OpenAI login", () => {
   assert.match(result.stdout, /Handled the requested task/);
 });
 
+test("task forwards explicit sandbox mode to app-server thread start", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run(
+    "node",
+    [SCRIPT, "task", "--sandbox", "danger-full-access", "check sandbox options"],
+    {
+      cwd: repo,
+      env: buildEnv(binDir)
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.equal(fakeState.lastThreadStart.sandbox, "danger-full-access");
+});
+
+test("task rejects unsupported sandbox values", () => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+
+  const badSandbox = run("node", [SCRIPT, "task", "--sandbox", "unsafe", "check sandbox options"], {
+    cwd: repo
+  });
+  assert.notEqual(badSandbox.status, 0);
+  assert.match(badSandbox.stderr, /Unsupported sandbox mode "unsafe"/);
+});
+
 test("task runs without auth preflight so Codex can refresh an expired session", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

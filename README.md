@@ -138,6 +138,7 @@ Use it when you want Codex to:
 > Depending on the task and the model you choose these tasks might take a long time and it's generally recommended to force the task to be in the background or move the agent to the background.
 
 It supports `--background`, `--wait`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread for this repo.
+It also supports `--sandbox <read-only|workspace-write|danger-full-access>` when you explicitly need to change the Codex runtime constraints for a task.
 
 Examples:
 
@@ -147,6 +148,7 @@ Examples:
 /codex:rescue --resume apply the top fix from the last run
 /codex:rescue --model gpt-5.4-mini --effort medium investigate the flaky integration test
 /codex:rescue --model spark fix the issue quickly
+/codex:rescue --sandbox danger-full-access run the migration in this externally sandboxed environment
 /codex:rescue --background investigate the regression
 ```
 
@@ -161,6 +163,8 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you do not pass `--model` or `--effort`, Codex chooses its own defaults.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
+- if you do not pass `--sandbox`, task runs remain `read-only` by default and become `workspace-write` only for write-capable rescue requests
+- `danger-full-access` should only be used when the machine or surrounding environment is already sandboxed
 
 ### `/codex:status`
 

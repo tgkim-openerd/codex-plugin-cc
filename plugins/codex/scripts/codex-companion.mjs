@@ -67,6 +67,7 @@ const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json"
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const VALID_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
@@ -77,7 +78,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -119,6 +120,22 @@ function normalizeReasoningEffort(effort) {
   if (!VALID_REASONING_EFFORTS.has(normalized)) {
     throw new Error(
       `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh.`
+    );
+  }
+  return normalized;
+}
+
+function normalizeSandboxMode(sandbox) {
+  if (sandbox == null) {
+    return null;
+  }
+  const normalized = String(sandbox).trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (!VALID_SANDBOX_MODES.has(normalized)) {
+    throw new Error(
+      `Unsupported sandbox mode "${sandbox}". Use one of: read-only, workspace-write, danger-full-access.`
     );
   }
   return normalized;
@@ -458,6 +475,8 @@ async function executeReviewRun(request) {
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   ensureCodexAvailable(request.cwd);
+  const sandbox = request.sandbox ?? (request.write ? "workspace-write" : "read-only");
+  const writeCapable = sandbox !== "read-only";
 
   const taskMetadata = buildTaskRunMetadata({
     prompt: request.prompt,
@@ -485,7 +504,7 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox,
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -502,7 +521,7 @@ async function executeTaskRun(request) {
     {
       title: taskMetadata.title,
       jobId: request.jobId ?? null,
-      write: Boolean(request.write)
+      write: writeCapable
     }
   );
   const payload = {
@@ -522,7 +541,7 @@ async function executeTaskRun(request) {
     summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `${taskMetadata.title} finished.`)),
     jobTitle: taskMetadata.title,
     jobClass: "task",
-    write: Boolean(request.write)
+    write: writeCapable
   };
 }
 
@@ -598,13 +617,14 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, sandbox, resumeLast, jobId }) {
   return {
     cwd,
     model,
     effort,
     prompt,
     write,
+    sandbox,
     resumeLast,
     jobId
   };
@@ -731,7 +751,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
@@ -742,6 +762,7 @@ async function handleTask(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
+  const sandbox = normalizeSandboxMode(options.sandbox);
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
@@ -750,6 +771,8 @@ async function handleTask(argv) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
   const write = Boolean(options.write);
+  const effectiveSandbox = sandbox ?? (write ? "workspace-write" : "read-only");
+  const writeCapable = effectiveSandbox !== "read-only";
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -759,13 +782,14 @@ async function handleTask(argv) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, writeCapable);
     const request = buildTaskRequest({
       cwd,
       model,
       effort,
       prompt,
       write,
+      sandbox,
       resumeLast,
       jobId: job.id
     });
@@ -774,7 +798,7 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, writeCapable);
   await runForegroundCommand(
     job,
     (progress) =>
@@ -784,6 +808,7 @@ async function handleTask(argv) {
         effort,
         prompt,
         write,
+        sandbox,
         resumeLast,
         jobId: job.id,
         onProgress: progress
