@@ -4,6 +4,8 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
+import { buildCommandInvocation } from "../plugins/codex/scripts/lib/process.mjs";
+
 export function makeTempDir(prefix = "codex-plugin-test-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -13,12 +15,17 @@ export function writeExecutable(filePath, source) {
 }
 
 export function run(command, args, options = {}) {
-  return spawnSync(command, args, {
+  const invocation = buildCommandInvocation(command, args, {
+    env: options.env,
+    platform: process.platform
+  });
+  return spawnSync(invocation.command, invocation.args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
     input: options.input,
-    shell: process.platform === "win32" && !path.isAbsolute(command),
+    shell: invocation.shell,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     windowsHide: true
   });
 }

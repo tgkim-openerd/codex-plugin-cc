@@ -1,7 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-import { terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
+import { buildCommandInvocation, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
+
+test("buildCommandInvocation routes Windows cmd shims through cmd.exe without shell mode", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plugin-process-"));
+  const shim = path.join(dir, "codex.cmd");
+  fs.writeFileSync(shim, "@echo off\r\n");
+
+  const invocation = buildCommandInvocation(shim, ["app-server"], {
+    platform: "win32",
+    env: { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD" }
+  });
+
+  assert.equal(path.basename(invocation.command).toLowerCase(), process.env.ComSpec ? path.basename(process.env.ComSpec).toLowerCase() : "cmd.exe");
+  assert.equal(invocation.shell, false);
+  assert.equal(invocation.windowsVerbatimArguments, true);
+  assert.deepEqual(invocation.args.slice(0, 3), ["/d", "/s", "/c"]);
+  assert.match(invocation.args[3], /^call /);
+  assert.match(invocation.args[3], /codex\.cmd/);
+  assert.match(invocation.args[3], /"app-server"/);
+});
 
 test("terminateProcessTree uses taskkill on Windows", () => {
   let captured = null;
@@ -52,4 +74,31 @@ test("terminateProcessTree treats missing Windows processes as already stopped",
   assert.equal(outcome.method, "taskkill");
   assert.equal(outcome.result.status, 128);
   assert.match(outcome.result.stdout, /not found/i);
+});
+
+test("terminateProcessTree falls back to process kill when localized taskkill output is ambiguous", () => {
+  let killedPid = null;
+  const outcome = terminateProcessTree(1234, {
+    platform: "win32",
+    runCommandImpl(command, args) {
+      return {
+        command,
+        args,
+        status: 255,
+        signal: null,
+        stdout: "",
+        stderr: "localized taskkill failure text",
+        error: null
+      };
+    },
+    killImpl(pid) {
+      killedPid = pid;
+    }
+  });
+
+  assert.equal(killedPid, 1234);
+  assert.equal(outcome.attempted, true);
+  assert.equal(outcome.delivered, true);
+  assert.equal(outcome.method, "kill");
+  assert.equal(outcome.result.status, 255);
 });

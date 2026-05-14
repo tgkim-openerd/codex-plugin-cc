@@ -1,15 +1,103 @@
+import fs from "node:fs";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 
+function splitPathList(value, platform = process.platform) {
+  const separator = platform === "win32" ? ";" : ":";
+  return String(value ?? "")
+    .split(separator)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function windowsPathExts(env = process.env) {
+  return String(env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function windowsCommandCandidates(command, env = process.env) {
+  const hasPathSeparator = /[\\/]/.test(command);
+  const searchDirs = hasPathSeparator ? [""] : splitPathList(env.PATH, "win32");
+  const parsed = path.win32.parse(command);
+  const extensions = parsed.ext ? [""] : windowsPathExts(env);
+  const candidates = [];
+
+  for (const dir of searchDirs) {
+    const base = dir ? path.win32.join(dir, command) : command;
+    for (const ext of extensions) {
+      candidates.push(`${base}${ext}`);
+    }
+    if (!parsed.ext) {
+      candidates.push(base);
+    }
+  }
+
+  return candidates;
+}
+
+function resolveWindowsCommand(command, env = process.env) {
+  for (const candidate of windowsCommandCandidates(command, env)) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        return fs.realpathSync.native?.(candidate) ?? fs.realpathSync(candidate);
+      }
+    } catch {
+      // Ignore unreadable PATH entries and keep searching.
+    }
+  }
+  return command;
+}
+
+function quoteWindowsCmdArg(value) {
+  const text = String(value ?? "");
+  if (!text) {
+    return '""';
+  }
+  return `"${text.replace(/%/g, "%%").replace(/"/g, '""')}"`;
+}
+
+export function buildCommandInvocation(command, args = [], options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
+    return { command, args, shell: false, windowsVerbatimArguments: false };
+  }
+
+  const resolvedCommand = resolveWindowsCommand(command, options.env ?? process.env);
+  const extension = path.win32.extname(resolvedCommand).toLowerCase();
+  if (extension === ".cmd" || extension === ".bat") {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", ["call", quoteWindowsCmdArg(resolvedCommand), ...args.map(quoteWindowsCmdArg)].join(" ")],
+      shell: false,
+      windowsVerbatimArguments: true
+    };
+  }
+
+  return {
+    command: resolvedCommand,
+    args,
+    shell: false,
+    windowsVerbatimArguments: false
+  };
+}
+
 export function runCommand(command, args = [], options = {}) {
-  const result = spawnSync(command, args, {
+  const invocation = buildCommandInvocation(command, args, {
+    env: options.env,
+    platform: options.platform
+  });
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
     input: options.input,
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
-    shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
+    shell: invocation.shell,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     windowsHide: true
   });
 
@@ -92,6 +180,16 @@ export function terminateProcessTree(pid, options = {}) {
 
     if (result.error) {
       throw result.error;
+    }
+
+    try {
+      killImpl(pid);
+      return { attempted: true, delivered: true, method: "kill", result };
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        return { attempted: true, delivered: false, method: "taskkill", result };
+      }
+      throw error;
     }
 
     throw new Error(formatCommandFailure(result));

@@ -47,7 +47,7 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
 test("setup is ready without npm when Codex is already installed and authenticated", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
-  fs.symlinkSync(process.execPath, path.join(binDir, "node"));
+  fs.symlinkSync(process.execPath, path.join(binDir, process.platform === "win32" ? "node.exe" : "node"));
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
     cwd: ROOT,
@@ -383,6 +383,7 @@ test("review logs reasoning summaries and review output to the job log", () => {
 test("task --resume-last resumes the latest persisted task thread", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
@@ -395,13 +396,15 @@ test("task --resume-last resumes the latest persisted task thread", () => {
   });
   assert.equal(firstRun.status, 0, firstRun.stderr);
 
-  const result = run("node", [SCRIPT, "task", "--resume-last", "follow up"], {
+  const result = run("node", [SCRIPT, "task", "--resume-last", "--sandbox", "workspace-write", "follow up"], {
     cwd: repo,
     env: buildEnv(binDir)
   });
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Resumed the prior run.\nFollow-up prompt accepted.\n");
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastThreadResume.sandbox, "workspace-write");
 });
 
 test("task-resume-candidate returns the latest rescue thread from the current session", () => {
@@ -822,13 +825,14 @@ test("task using the shared broker still completes when Codex spawns subagents",
 test("task --background enqueues a detached worker and exposes per-job status", async () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir, "slow-task");
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
-  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the failing test"], {
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "--sandbox", "danger-full-access", "investigate the failing test"], {
     cwd: repo,
     env: buildEnv(binDir)
   });
@@ -866,6 +870,8 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.equal(resultPayload.job.id, launchPayload.jobId);
   assert.equal(resultPayload.job.status, "completed");
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastThreadStart.sandbox, "danger-full-access");
 });
 
 test("review rejects focus text because it is native-review only", () => {
