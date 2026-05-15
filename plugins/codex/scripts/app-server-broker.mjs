@@ -19,6 +19,9 @@ const MAX_JSONL_LINE_BYTES = 16 * 1024 * 1024;
 // approval / patch / tool requests quickly; if the socket stays alive but silent the
 // pending promise would otherwise leak forever.
 const SERVER_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+// Single periodic sweep interval (one timer for ALL pending server requests) — avoids
+// per-request setTimeout overhead under sustained traffic.
+const SERVER_TIMEOUT_SWEEP_MS = 15 * 1000;
 
 function buildStreamThreadIds(method, params, result) {
   const threadIds = new Set();
@@ -81,16 +84,44 @@ async function main() {
   const pendingServerRequests = new Map();
   let nextServerRequestId = 1;
 
+  /** @type {NodeJS.Timer | null} */
+  let serverTimeoutSweepHandle = null;
+
+  function ensureServerTimeoutSweep() {
+    if (serverTimeoutSweepHandle) {
+      return;
+    }
+    serverTimeoutSweepHandle = setInterval(() => {
+      const now = Date.now();
+      for (const [id, pending] of pendingServerRequests) {
+        if (pending.deadline && pending.deadline <= now) {
+          pendingServerRequests.delete(id);
+          pending.reject(
+            new Error(
+              `Broker server request "${pending.method}" timed out after ${SERVER_REQUEST_TIMEOUT_MS}ms.`
+            )
+          );
+        }
+      }
+      if (pendingServerRequests.size === 0 && serverTimeoutSweepHandle) {
+        clearInterval(serverTimeoutSweepHandle);
+        serverTimeoutSweepHandle = null;
+      }
+    }, SERVER_TIMEOUT_SWEEP_MS);
+    serverTimeoutSweepHandle.unref?.();
+  }
+
   function rejectSocketServerRequests(socket, error) {
     for (const [id, pending] of pendingServerRequests.entries()) {
       if (pending.socket !== socket) {
         continue;
       }
-      if (pending.timeoutHandle) {
-        clearTimeout(pending.timeoutHandle);
-      }
       pendingServerRequests.delete(id);
       pending.reject(error);
+    }
+    if (pendingServerRequests.size === 0 && serverTimeoutSweepHandle) {
+      clearInterval(serverTimeoutSweepHandle);
+      serverTimeoutSweepHandle = null;
     }
   }
 
@@ -102,20 +133,14 @@ async function main() {
 
     const id = `server-${nextServerRequestId++}`;
     return new Promise((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        const pending = pendingServerRequests.get(id);
-        if (!pending) {
-          return;
-        }
-        pendingServerRequests.delete(id);
-        pending.reject(
-          new Error(
-            `Broker server request "${message.method}" timed out after ${SERVER_REQUEST_TIMEOUT_MS}ms.`
-          )
-        );
-      }, SERVER_REQUEST_TIMEOUT_MS);
-      timeoutHandle.unref?.();
-      pendingServerRequests.set(id, { socket: target, resolve, reject, timeoutHandle });
+      pendingServerRequests.set(id, {
+        socket: target,
+        resolve,
+        reject,
+        method: message.method,
+        deadline: Date.now() + SERVER_REQUEST_TIMEOUT_MS
+      });
+      ensureServerTimeoutSweep();
       send(target, {
         id,
         method: message.method,
@@ -234,6 +259,10 @@ async function main() {
             pending.reject(new Error(message.error.message ?? "Broker server request failed."));
           } else {
             pending.resolve(message.result ?? {});
+          }
+          if (pendingServerRequests.size === 0 && serverTimeoutSweepHandle) {
+            clearInterval(serverTimeoutSweepHandle);
+            serverTimeoutSweepHandle = null;
           }
           continue;
         }

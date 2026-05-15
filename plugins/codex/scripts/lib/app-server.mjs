@@ -48,6 +48,10 @@ const MAX_STDERR_BYTES = 64 * 1024;
 // Maximum wait for an app-server RPC response. Long-running turn requests are normal,
 // but a truly non-responsive child should not pin pending promises forever.
 const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
+// Single periodic sweep instead of per-request setTimeout — avoids libuv timer-wheel
+// pressure under sustained RPC traffic on Windows (observed: per-request setTimeout
+// slowed task --background full-suite tests from <15 s to >22 s).
+const TIMEOUT_SWEEP_INTERVAL_MS = 30 * 1000;
 
 function buildJsonRpcError(code, message, data) {
   return data === undefined ? { code, message } : { code, message, data };
@@ -80,10 +84,43 @@ class AppServerClientBase {
     this.notificationHandler = null;
     this.lineBuffer = "";
     this.transport = "unknown";
+    /** @type {ReturnType<typeof setInterval> | null} */
+    this.timeoutSweepHandle = null;
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
     });
+  }
+
+  ensureTimeoutSweep() {
+    if (this.timeoutSweepHandle || this.closed) {
+      return;
+    }
+    this.timeoutSweepHandle = setInterval(() => {
+      const now = Date.now();
+      for (const [id, pending] of this.pending) {
+        if (pending.deadline && pending.deadline <= now) {
+          this.pending.delete(id);
+          pending.reject(
+            createProtocolError(
+              `codex app-server ${pending.method} timed out after ${DEFAULT_REQUEST_TIMEOUT_MS}ms.`
+            )
+          );
+        }
+      }
+      if (this.pending.size === 0 && this.timeoutSweepHandle) {
+        clearInterval(this.timeoutSweepHandle);
+        this.timeoutSweepHandle = null;
+      }
+    }, TIMEOUT_SWEEP_INTERVAL_MS);
+    this.timeoutSweepHandle.unref?.();
+  }
+
+  clearTimeoutSweep() {
+    if (this.timeoutSweepHandle) {
+      clearInterval(this.timeoutSweepHandle);
+      this.timeoutSweepHandle = null;
+    }
   }
 
   setNotificationHandler(handler) {
@@ -105,18 +142,13 @@ class AppServerClientBase {
     this.nextId += 1;
 
     return new Promise((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        const pending = this.pending.get(id);
-        if (!pending) {
-          return;
-        }
-        this.pending.delete(id);
-        pending.reject(
-          createProtocolError(`codex app-server ${method} timed out after ${DEFAULT_REQUEST_TIMEOUT_MS}ms.`)
-        );
-      }, DEFAULT_REQUEST_TIMEOUT_MS);
-      timeoutHandle.unref?.();
-      this.pending.set(id, { resolve, reject, method, timeoutHandle });
+      this.pending.set(id, {
+        resolve,
+        reject,
+        method,
+        deadline: Date.now() + DEFAULT_REQUEST_TIMEOUT_MS
+      });
+      this.ensureTimeoutSweep();
       this.sendMessage({ id, method, params });
     });
   }
@@ -172,14 +204,14 @@ class AppServerClientBase {
         return;
       }
       this.pending.delete(message.id);
-      if (pending.timeoutHandle) {
-        clearTimeout(pending.timeoutHandle);
-      }
 
       if (message.error) {
         pending.reject(createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error));
       } else {
         pending.resolve(message.result ?? {});
+      }
+      if (this.pending.size === 0) {
+        this.clearTimeoutSweep();
       }
       return;
     }
@@ -219,12 +251,10 @@ class AppServerClientBase {
     this.exitError = error ?? null;
 
     for (const pending of this.pending.values()) {
-      if (pending.timeoutHandle) {
-        clearTimeout(pending.timeoutHandle);
-      }
       pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
     }
     this.pending.clear();
+    this.clearTimeoutSweep();
     this.resolveExit(undefined);
   }
 
