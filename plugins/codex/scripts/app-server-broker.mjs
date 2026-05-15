@@ -125,6 +125,13 @@ async function main() {
     }
   }
 
+  function rejectAllPendingServerRequests(error) {
+    for (const [id, pending] of pendingServerRequests.entries()) {
+      pendingServerRequests.delete(id);
+      pending.reject(error);
+    }
+  }
+
   function forwardServerRequest(message) {
     const target = activeStreamSocket ?? activeRequestSocket;
     if (!target || target.destroyed) {
@@ -141,11 +148,22 @@ async function main() {
         deadline: Date.now() + SERVER_REQUEST_TIMEOUT_MS
       });
       ensureServerTimeoutSweep();
-      send(target, {
-        id,
-        method: message.method,
-        params: message.params ?? {}
-      });
+      try {
+        send(target, {
+          id,
+          method: message.method,
+          params: message.params ?? {}
+        });
+      } catch (sendError) {
+        // Synchronous send failure would otherwise leave the pending entry in the map
+        // until the next sweep tick (SERVER_TIMEOUT_SWEEP_MS). Reject + delete immediately.
+        pendingServerRequests.delete(id);
+        if (pendingServerRequests.size === 0 && serverTimeoutSweepHandle) {
+          clearInterval(serverTimeoutSweepHandle);
+          serverTimeoutSweepHandle = null;
+        }
+        reject(sendError);
+      }
     });
   }
 
@@ -183,6 +201,13 @@ async function main() {
   }
 
   async function shutdown(server) {
+    // Reject any in-flight server-side RPCs and tear down the sweep timer so the broker
+    // exits cleanly even if the event loop is otherwise idle.
+    rejectAllPendingServerRequests(new Error("Broker is shutting down."));
+    if (serverTimeoutSweepHandle) {
+      clearInterval(serverTimeoutSweepHandle);
+      serverTimeoutSweepHandle = null;
+    }
     for (const socket of sockets) {
       socket.end();
     }

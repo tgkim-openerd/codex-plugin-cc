@@ -149,7 +149,17 @@ class AppServerClientBase {
         deadline: Date.now() + DEFAULT_REQUEST_TIMEOUT_MS
       });
       this.ensureTimeoutSweep();
-      this.sendMessage({ id, method, params });
+      try {
+        this.sendMessage({ id, method, params });
+      } catch (sendError) {
+        // sendMessage failed synchronously — the pending entry would otherwise sit until
+        // the next sweep tick (TIMEOUT_SWEEP_INTERVAL_MS). Reject immediately + delete.
+        this.pending.delete(id);
+        if (this.pending.size === 0) {
+          this.clearTimeoutSweep();
+        }
+        reject(sendError);
+      }
     });
   }
 
