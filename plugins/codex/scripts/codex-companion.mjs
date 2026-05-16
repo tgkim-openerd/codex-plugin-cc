@@ -88,7 +88,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs agent [--wait|--background] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--resume-last|--resume|--resume-id <thread-id>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [--profile <name>] [--max-findings <N>] [--full-access | --dangerously-skip-permissions] [--prompt-stdin] [prompt]",
       "  node scripts/codex-companion.mjs continue [--job <job-id>] [--background] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs approve <approval-id> [--session] [--response-json <json>] [--json]",
       "  node scripts/codex-companion.mjs deny <approval-id> [--json]",
@@ -1109,7 +1109,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval", "profile"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval", "profile", "resume-id"],
     booleanOptions: [
       "json",
       "write",
@@ -1163,6 +1163,15 @@ async function handleTask(argv) {
   if (resumeLast && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
+  // PR-7.2 (#230) — --resume-id <threadId> resumes a specific previously
+  // tracked Codex thread by its app-server id, bypassing the resolveLatest
+  // heuristic (which finds the most recent thread for the workspace).
+  // Mutually exclusive with --resume-last / --fresh because the user must
+  // pick one resume strategy.
+  const explicitResumeId = options["resume-id"] ? String(options["resume-id"]).trim() : null;
+  if (explicitResumeId && (resumeLast || fresh)) {
+    throw new Error("Choose either --resume-id <thread-id>, --resume / --resume-last, or --fresh.");
+  }
   const write = Boolean(options.write);
   // PR-2.1 (#240 / #167 / #304) BREAKING — when the user did not pass
   // --sandbox explicitly, omit the field (effectiveSandbox = null) so the
@@ -1210,6 +1219,7 @@ async function handleTask(argv) {
       sandbox,
       approvalPolicy,
       resumeLast,
+      threadId: explicitResumeId,
       jobId: job.id
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
@@ -1235,6 +1245,7 @@ async function handleTask(argv) {
         sandbox,
         approvalPolicy,
         resumeLast,
+        threadId: explicitResumeId,
         jobId: job.id,
         onProgress: progress
       }),
