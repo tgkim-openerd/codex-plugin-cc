@@ -118,11 +118,15 @@ function maybeEmitV2FirstRunWarning() {
     return;
   }
   process.stderr.write(
-    "[codex-plugin-cc v2.0.0] sandbox default is now inherited from ~/.codex/config.toml\n" +
-      "  - Before: review/task hard-coded sandbox=\"read-only\" / \"workspace-write\"\n" +
-      "  - Now:    omitted unless --sandbox is passed; user codex config takes effect\n" +
-      "  Restore legacy: set CODEX_PLUGIN_SANDBOX_DEFAULT=read-only (or workspace-write)\n" +
-      "  Suppress this notice: set CODEX_PLUGIN_SUPPRESS_V2_NOTICE=1\n"
+    "[codex-plugin-cc v2.0.0] BREAKING changes from v1.x:\n" +
+      "  1. Sandbox default is now inherited from ~/.codex/config.toml\n" +
+      "     - Before: review/task hard-coded sandbox=\"read-only\" / \"workspace-write\"\n" +
+      "     - Now:    omitted unless --sandbox is passed; user codex config takes effect\n" +
+      "     Restore legacy: CODEX_PLUGIN_SANDBOX_DEFAULT=read-only (or workspace-write)\n" +
+      "  2. Plugin codex sessions land in $HOME/.codex/claude-code/ instead of\n" +
+      "     ~/.codex/ so they no longer pollute the Codex Desktop history feed.\n" +
+      "     Restore legacy shared home: CODEX_PLUGIN_USE_DEFAULT_HOME=1\n" +
+      "  Suppress this notice: CODEX_PLUGIN_SUPPRESS_V2_NOTICE=1\n"
   );
 }
 

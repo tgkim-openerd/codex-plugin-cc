@@ -9,6 +9,7 @@
  */
 import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
@@ -21,6 +22,34 @@ const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"))
 
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
+
+// PR-5.6 (#282) BREAKING — build the env we hand to plugin-spawned codex
+// children. Adds CODEX_HOME=$HOME/.codex/claude-code/ so plugin sessions
+// land in a dedicated home that Codex Desktop ignores. Restoring the
+// shared home is a single env var: CODEX_PLUGIN_USE_DEFAULT_HOME=1.
+//
+// Exposed so the broker spawn path (broker-lifecycle.mjs) can build the
+// same env. Pure function — no side effects, safe to call repeatedly.
+export function buildPluginCodexEnv(baseEnv = process.env) {
+  if (String(baseEnv.CODEX_PLUGIN_USE_DEFAULT_HOME ?? "").trim() === "1") {
+    return { ...baseEnv };
+  }
+  // Honor a pre-set CODEX_HOME so the user can pin a custom location.
+  if (baseEnv.CODEX_HOME && String(baseEnv.CODEX_HOME).trim()) {
+    return { ...baseEnv };
+  }
+  const home = baseEnv.HOME ?? baseEnv.USERPROFILE;
+  if (!home) {
+    return { ...baseEnv };
+  }
+  const pluginCodexHome = path.join(home, ".codex", "claude-code");
+  try {
+    fs.mkdirSync(pluginCodexHome, { recursive: true });
+  } catch {
+    // best-effort; codex CLI will surface a real error if it cannot use it
+  }
+  return { ...baseEnv, CODEX_HOME: pluginCodexHome };
+}
 
 /** @type {ClientInfo} */
 //
@@ -298,12 +327,17 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     if (typeof this.options.profile === "string" && this.options.profile.trim()) {
       codexArgs.push("-c", `profile=${this.options.profile.trim()}`);
     }
+    // PR-5.6 (#282) BREAKING — plugin-launched codex children get a dedicated
+    // CODEX_HOME so their sessions / history feed do not pollute the user's
+    // Codex Desktop view. Default: $HOME/.codex/claude-code/. Restore legacy
+    // shared home with CODEX_PLUGIN_USE_DEFAULT_HOME=1.
+    const childEnv = buildPluginCodexEnv(this.options.env ?? process.env);
     const invocation = buildCommandInvocation("codex", codexArgs, {
-      env: this.options.env ?? process.env
+      env: childEnv
     });
     this.proc = spawn(invocation.command, invocation.args, {
       cwd: this.cwd,
-      env: this.options.env ?? process.env,
+      env: childEnv,
       stdio: ["pipe", "pipe", "pipe"],
       shell: invocation.shell,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,

@@ -47,7 +47,7 @@ test("codex-companion.mjs: first-run V2 notice helper exists and is gated", asyn
 
   assert.match(source, /maybeEmitV2FirstRunWarning/, "warning helper present");
   assert.match(source, /CODEX_PLUGIN_SUPPRESS_V2_NOTICE/, "suppress env var documented");
-  assert.match(source, /sandbox default is now inherited/, "notice text present");
+  assert.match(source, /sandbox default is now inherited/i, "notice text present");
 });
 
 test("codex-companion.mjs: handleTask sandbox-default logic respects CODEX_PLUGIN_SANDBOX_DEFAULT", async () => {

@@ -179,13 +179,19 @@ export async function ensureBrokerSession(cwd, options = {}) {
       options.scriptPath ??
       fileURLToPath(new URL("../app-server-broker.mjs", import.meta.url));
 
+    // PR-5.6 (#282) — broker process inherits the plugin-flavored env so any
+    // codex children it spawns also see CODEX_HOME=$HOME/.codex/claude-code/.
+    // Import lazy via dynamic to avoid a circular import with app-server.mjs
+    // (which itself imports from this module).
+    const { buildPluginCodexEnv } = await import("./app-server.mjs");
+    const brokerEnv = buildPluginCodexEnv(options.env ?? process.env);
     const child = spawnBrokerProcess({
       scriptPath,
       cwd,
       endpoint,
       pidFile,
       logFile,
-      env: options.env ?? process.env
+      env: brokerEnv
     });
 
     const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
