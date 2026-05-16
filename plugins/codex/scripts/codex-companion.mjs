@@ -481,14 +481,31 @@ async function handleSetup(argv) {
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
-function buildAdversarialReviewPrompt(context, focusText) {
+// PR-6.6 (#298) — /codex:review and /codex:adversarial-review consistently
+// returned 2-3 findings per run even when a large refactor surfaced 20+
+// material issues. The prompt itself never asked for more, so the model
+// optimized for "prefer one strong finding over several weak ones" beyond
+// the user's intent. Expose `--max-findings <N>` (default 20) so the prompt
+// requests up to N defensible findings while keeping the "no filler" guard.
+const DEFAULT_MAX_FINDINGS = 20;
+
+function normalizeMaxFindings(raw) {
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return DEFAULT_MAX_FINDINGS;
+  }
+  return Math.min(numeric, 100); // hard cap to keep prompts bounded
+}
+
+function buildAdversarialReviewPrompt(context, focusText, options = {}) {
   const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
   return interpolateTemplate(template, {
     REVIEW_KIND: "Adversarial Review",
     TARGET_LABEL: context.target.label,
     USER_FOCUS: focusText || "No extra focus provided.",
     REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
-    REVIEW_INPUT: context.content
+    REVIEW_INPUT: context.content,
+    MAX_FINDINGS: String(normalizeMaxFindings(options.maxFindings))
   });
 }
 
@@ -651,7 +668,9 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
-  const prompt = buildAdversarialReviewPrompt(context, focusText);
+  const prompt = buildAdversarialReviewPrompt(context, focusText, {
+    maxFindings: request.maxFindings
+  });
   // PR-2.1 (#240 / #167) — adversarial-review is a read-only flow, but we no
   // longer hard-code sandbox:"read-only" here. The legacy hard-code prevented
   // user `~/.codex/config.toml` `sandbox_mode = "danger-full-access"` from
@@ -974,7 +993,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "profile"],
+    valueOptions: ["base", "scope", "model", "cwd", "profile", "max-findings"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -1013,6 +1032,7 @@ async function handleReviewCommand(argv, config) {
       scope: options.scope,
       model: options.model,
       profile: options.profile,
+      maxFindings: options["max-findings"],
       focusText,
       reviewName: config.reviewName,
       validateRequestKey: config.validateRequestKey ?? null
@@ -1037,6 +1057,7 @@ async function handleReviewCommand(argv, config) {
         scope: options.scope,
         model: options.model,
         profile: options.profile,
+        maxFindings: options["max-findings"],
         focusText,
         reviewName: config.reviewName,
         onProgress: progress

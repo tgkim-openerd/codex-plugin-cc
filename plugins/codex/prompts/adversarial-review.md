@@ -69,6 +69,9 @@ If a conclusion depends on an inference, state that explicitly in the finding bo
 Prefer one strong finding over several weak ones.
 Do not dilute serious issues with filler.
 If the change looks safe, say so directly and return no findings.
+Report up to {{MAX_FINDINGS}} material findings if the diff genuinely contains
+that many independently defensible issues; do not artificially cap at 2-3
+when a real refactor surfaces more.
 </calibration_rules>
 
 <final_check>
