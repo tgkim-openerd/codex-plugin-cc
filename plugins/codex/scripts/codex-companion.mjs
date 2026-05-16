@@ -718,7 +718,17 @@ async function executeTaskRun(request) {
         })
       : null,
     persistThread: true,
-    threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
+    // PR-5.7 (#283) — when no user prompt is supplied we used to fall back to
+    // DEFAULT_CONTINUE_PROMPT, which made every "continue/resume" session
+    // collapse to an identical thread name ("Codex Companion Task: Continue
+    // from the current thread state..."). Append the jobId so the user can
+    // still tell sessions apart in Codex Desktop. Real user prompts keep the
+    // existing short-excerpt behavior, only this fall-back path changes.
+    threadName: resumeThreadId
+      ? null
+      : request.prompt
+      ? buildPersistentTaskThreadName(request.prompt)
+      : `${buildPersistentTaskThreadName(DEFAULT_CONTINUE_PROMPT)} [${request.jobId ?? "session"}]`
   });
 
   const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
