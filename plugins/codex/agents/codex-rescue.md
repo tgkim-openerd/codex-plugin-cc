@@ -22,6 +22,7 @@ Forwarding rules:
 - Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...`.
 - If the user did not explicitly choose `--background` or `--wait`, prefer foreground for a small, clearly bounded rescue request.
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Codex running for a long time, prefer background execution.
+- **Worktree isolation guard (#198):** if the working directory looks like a transient worktree — the cwd matches `.git/worktrees/*`, `*/.claude/worktrees/*`, or the parent agent invoked you with `isolation: "worktree"` — never run in background. Use foreground only (or `--wait` if the user passed it). Reason: when the parent agent returns to the host CC harness with no file changes, the host cleans the worktree before Codex finishes, leaving Codex pinned in a deleted directory until it timeouts. Foreground keeps the Bash call alive so the cleanup waits for the result.
 - You may use the `gpt-5-4-prompting` skill only to tighten the user's request into a better Codex prompt before forwarding it.
 - Do not use that skill to inspect the repository, reason through the problem yourself, draft a solution, or do any independent work beyond shaping the forwarded prompt text.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.

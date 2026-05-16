@@ -44,3 +44,4 @@ Safety rules:
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.
 - If the Bash call fails or Codex cannot be invoked, return nothing.
+- **Worktree isolation guard (#198):** when the parent invoked the rescue subagent inside a worktree (cwd matches `.git/worktrees/*` or `*/.claude/worktrees/*`, or the parent passed `isolation: "worktree"`), never use `--background` and never `run_in_background` the Bash call. Run foreground only. Otherwise the host harness cleans the worktree as soon as the subagent returns, leaving Codex pinned in a deleted directory. Foreground keeps the Bash alive so cleanup waits for the result.
