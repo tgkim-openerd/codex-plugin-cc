@@ -161,6 +161,91 @@ function readStoredJobOrNull(workspaceRoot, jobId) {
   return readJobFile(jobFile);
 }
 
+// PR-1.2 (#228) — when the foreground entrypoint receives SIGTERM/SIGINT/SIGHUP
+// without a registered handler Node exits immediately and runTrackedJob's catch
+// block never runs, leaving status="running" + a stale pid in state.json. Install
+// idempotent signal handlers around the runner invocation that flush the job to
+// a terminal "terminated" status before re-raising the original signal exit.
+//
+// Process exit codes follow the Unix convention: SIGTERM=143, SIGINT=130, SIGHUP=129.
+const SIGNAL_EXIT_CODES = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129, SIGBREAK: 149 };
+const SIGNAL_NAMES = Object.keys(SIGNAL_EXIT_CODES);
+
+function markJobTerminated(job, runningRecord, options, signal) {
+  const completedAt = nowIso();
+  const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+  const failureReason = `signal:${signal}`;
+  try {
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...existing,
+      status: "failed",
+      phase: "terminated",
+      errorMessage: `Foreground task received ${signal}; marking job terminated.`,
+      failureReason,
+      pid: null,
+      completedAt,
+      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
+    });
+  } catch {
+    // best-effort — the per-job file may already be unwritable in some teardown paths
+  }
+  try {
+    upsertJob(job.workspaceRoot, {
+      id: job.id,
+      status: "failed",
+      phase: "terminated",
+      pid: null,
+      errorMessage: `Foreground task received ${signal}; marking job terminated.`,
+      failureReason,
+      completedAt
+    });
+  } catch {
+    // best-effort
+  }
+  try {
+    appendLogLine(options.logFile ?? job.logFile ?? null, `Foreground task received ${signal}; marking job terminated.`);
+  } catch {
+    // ignore
+  }
+}
+
+function installForegroundSignalHandlers(job, runningRecord, options) {
+  let triggered = false;
+  const installed = [];
+  const handler = (signal) => {
+    if (triggered) {
+      return;
+    }
+    triggered = true;
+    markJobTerminated(job, runningRecord, options, signal);
+    // Detach the handler so a second signal does not re-enter the cleanup path.
+    cleanup();
+    process.exit(SIGNAL_EXIT_CODES[signal] ?? 1);
+  };
+
+  for (const signal of SIGNAL_NAMES) {
+    try {
+      const bound = () => handler(signal);
+      process.on(signal, bound);
+      installed.push([signal, bound]);
+    } catch {
+      // Some signals (e.g. SIGBREAK on POSIX) are not supported; skip silently.
+    }
+  }
+
+  function cleanup() {
+    for (const [signal, bound] of installed) {
+      try {
+        process.removeListener(signal, bound);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return cleanup;
+}
+
 export async function runTrackedJob(job, runner, options = {}) {
   const runningRecord = {
     ...job,
@@ -172,6 +257,8 @@ export async function runTrackedJob(job, runner, options = {}) {
   };
   writeJobFile(job.workspaceRoot, job.id, runningRecord);
   upsertJob(job.workspaceRoot, runningRecord);
+
+  const releaseSignalHandlers = installForegroundSignalHandlers(job, runningRecord, options);
 
   try {
     const execution = await runner();
@@ -223,5 +310,14 @@ export async function runTrackedJob(job, runner, options = {}) {
       completedAt
     });
     throw error;
+  } finally {
+    releaseSignalHandlers();
   }
 }
+
+// PR-1.2 (#228) — exposed for the SIGTERM-handler contract. Internal only.
+export const __testHooks = {
+  installForegroundSignalHandlers,
+  markJobTerminated,
+  SIGNAL_EXIT_CODES
+};
