@@ -65,12 +65,16 @@ function measureCombinedGitOutputBytes(cwd, argSets, maxBytes) {
   return totalBytes;
 }
 
-function buildBranchComparison(cwd, baseRef) {
-  const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", baseRef]).stdout.trim();
+function buildBranchComparison(cwd, baseRef, tipRef = "HEAD") {
+  // PR-7.5 (#114) — tipRef defaults to HEAD for the legacy "review my current
+  // branch against base" flow, but can be overridden so the user can review a
+  // remote ref (e.g. origin/feature-branch) without checking it out first.
+  const mergeBase = gitChecked(cwd, ["merge-base", tipRef, baseRef]).stdout.trim();
   return {
     mergeBase,
-    commitRange: `${mergeBase}..HEAD`,
-    reviewRange: `${baseRef}...HEAD`
+    commitRange: `${mergeBase}..${tipRef}`,
+    reviewRange: `${baseRef}...${tipRef}`,
+    tipRef
   };
 }
 
@@ -165,8 +169,24 @@ export function resolveReviewTarget(cwd, options = {}) {
 
   const requestedScope = options.scope ?? "auto";
   const baseRef = options.base ?? null;
+  const tipRef = options.branch ?? options.tip ?? null;
   const state = getWorkingTreeState(cwd);
   const supportedScopes = new Set(["auto", "working-tree", "branch"]);
+
+  // PR-7.5 (#114) — `--branch <ref>` reviews the given ref against the default
+  // branch (or against --base if also supplied) without checking out the ref
+  // locally. Useful for daily PR review: pass `origin/feature-x` and read the
+  // adversarial output without disrupting the current working tree.
+  if (tipRef) {
+    const effectiveBase = baseRef ?? detectDefaultBranch(cwd);
+    return {
+      mode: "branch",
+      label: `branch diff: ${tipRef} against ${effectiveBase}`,
+      baseRef: effectiveBase,
+      tipRef,
+      explicit: true
+    };
+  }
 
   if (baseRef) {
     return {
@@ -289,7 +309,8 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
 
 function collectBranchContext(cwd, baseRef, options = {}) {
   const includeDiff = options.includeDiff !== false;
-  const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
+  const tipRef = options.tipRef ?? "HEAD";
+  const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef, tipRef);
   const currentBranch = getCurrentBranch(cwd);
   const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
   const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
@@ -368,7 +389,11 @@ export function collectReviewContext(cwd, target, options = {}) {
         diffBytes <= maxInlineDiffBytes);
     details = collectWorkingTreeContext(repoRoot, state, { includeDiff });
   } else {
-    const comparison = buildBranchComparison(repoRoot, target.baseRef);
+    // PR-7.5 (#114) — tipRef defaults to HEAD; --branch <ref> overrides it
+    // so the review diff range becomes mergeBase..<remote-ref> instead of
+    // mergeBase..HEAD, letting users review a remote branch without checkout.
+    const tipRef = target.tipRef ?? "HEAD";
+    const comparison = buildBranchComparison(repoRoot, target.baseRef, tipRef);
     const fileCount = gitChecked(repoRoot, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean).length;
     diffBytes = measureGitOutputBytes(
       repoRoot,
@@ -376,7 +401,7 @@ export function collectReviewContext(cwd, target, options = {}) {
       maxInlineDiffBytes
     );
     includeDiff = options.includeDiff ?? (fileCount <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
-    details = collectBranchContext(repoRoot, target.baseRef, { includeDiff, comparison });
+    details = collectBranchContext(repoRoot, target.baseRef, { includeDiff, comparison, tipRef });
   }
 
   return {

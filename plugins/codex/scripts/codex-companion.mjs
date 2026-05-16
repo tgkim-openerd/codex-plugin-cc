@@ -1028,7 +1028,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "profile", "max-findings"],
+    valueOptions: ["base", "scope", "model", "cwd", "profile", "max-findings", "branch"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -1040,7 +1040,11 @@ async function handleReviewCommand(argv, config) {
   const focusText = positionals.join(" ").trim();
   const target = resolveReviewTarget(cwd, {
     base: options.base,
-    scope: options.scope
+    scope: options.scope,
+    // PR-7.5 (#114) — accept --branch <ref> to review a remote branch
+    // without local checkout. resolveReviewTarget threads `tipRef` into the
+    // git diff range so the review compares <ref> against the default base.
+    branch: options.branch
   });
 
   config.validateRequest?.(target, focusText);
