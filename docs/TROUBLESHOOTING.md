@@ -21,6 +21,7 @@ For BREAKING changes from v1.x, see [MIGRATION_v2.0.md](MIGRATION_v2.0.md) first
 | `"access token could not be refreshed"` after `codex login` | [#9 Stale auth cache](#9-stale-auth-cache-after-codex-logout--login) |
 | All sessions show identical "Continue from the current..." name in Codex Desktop | [#10 Identical default-prompt session names](#10-identical-default-prompt-session-names) |
 | Plugin sessions burying real chats in Codex Desktop | [#11 Codex Desktop history pollution](#11-codex-desktop-history-pollution) |
+| `/codex:setup` reports `loggedIn: false` even though `codex login` succeeded | [#12 Plugin loggedIn false after codex login (v2.0.0 home isolation)](#12-plugin-says-loggedin-false-after-a-successful-codex-login-v200-home-isolation) |
 
 ---
 
@@ -301,6 +302,67 @@ export CODEX_PLUGIN_USE_DEFAULT_HOME=1
 mkdir -p ~/.codex/claude-code/sessions
 cp -r ~/.codex/sessions/<plugin-thread-ids> ~/.codex/claude-code/sessions/
 ```
+
+---
+
+## 12. Plugin says `loggedIn: false` after a successful `codex login` (v2.0.0 home isolation)
+
+**Symptom**:
+
+```bash
+$ codex login
+Successfully logged in
+
+$ /codex:setup
+# JSON output contains:
+"auth": {
+  "available": true,
+  "loggedIn": false,
+  "detail": "The active provider requires OpenAI authentication",
+  "requiresOpenaiAuth": true
+}
+```
+
+Every `/codex:rescue`, `/codex:task`, `/codex:review` invocation that triggers the auth gate then fails with the same `loggedIn: false` even though `codex exec` from a normal shell still works.
+
+**Cause**: v2.0.0 PR-5.6 changed `CODEX_HOME` for plugin-spawned codex processes to `$HOME/.codex/claude-code/` so plugin sessions stop polluting the Codex Desktop history feed (see [#11](#11-codex-desktop-history-pollution)). `codex login` from a normal shell still writes `auth.json` into the **shared** `~/.codex/` because that is the codex home it sees. The plugin's app-server, running with the isolated home, never reads that token.
+
+This is by design but easy to miss — the first-run notice mentions the home change but does not call out the auth file as a separate file to migrate.
+
+**Fix** (pick one):
+
+**Option A — one-time copy** (lowest impact, preserves history isolation):
+
+```bash
+cp ~/.codex/auth.json ~/.codex/claude-code/auth.json
+```
+
+Repeat after every `codex logout && codex login` cycle (or after any token rotation surfaced by section [#9](#9-stale-auth-cache-after-codex-logout--codex-login)).
+
+**Option B — log in directly into the plugin home** (write-through, no copy needed):
+
+```bash
+CODEX_HOME="$HOME/.codex/claude-code" codex login
+```
+
+Same flow as a normal `codex login`, but the token lands in the plugin's home from the start. Re-run this instead of plain `codex login` whenever you rotate the token.
+
+**Option C — opt out of home isolation** (shares Codex Desktop history again, restores v1.x behavior):
+
+```bash
+export CODEX_PLUGIN_USE_DEFAULT_HOME=1
+```
+
+Choose this only if you actively resume plugin-launched threads in Codex Desktop or do not mind the history pollution from [#11](#11-codex-desktop-history-pollution).
+
+**Verify the fix**:
+
+```bash
+/codex:setup --json | grep -E "loggedIn|detail"
+# Expect:  "loggedIn": true, "detail": "ChatGPT login active for <email>"
+```
+
+**Related**: If the auth annotation says the token "could not be refreshed" instead of `loggedIn: false`, you have hit section [#9](#9-stale-auth-cache-after-codex-logout--codex-login) (broker-cached stale token), not this section.
 
 ---
 
