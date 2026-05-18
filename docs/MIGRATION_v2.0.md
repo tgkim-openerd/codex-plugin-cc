@@ -149,6 +149,8 @@ These all default to v1.x behavior unless you explicitly opt in:
 |---|---|
 | `CODEX_PLUGIN_USER_CONFIG` | Path to a user-level JSON config file (PR-7.7, #213). Overrides the XDG / legacy discovery order. Primarily for tests and ad-hoc per-invocation overrides — see "User-level config defaults" below. |
 | `CODEX_PLUGIN_PRESERVE_LOCALE` | When `=1`, disable the v2.1.0 non-UTF-8 locale mitigation (PR-4.5, #310). The plugin passes the host `LANG` / `LC_ALL` through to spawned codex children even on non-UTF-8 systems, restoring the upstream JSONL parser crash risk in exchange for localized codex output. See [`TROUBLESHOOTING.md` #13](TROUBLESHOOTING.md#13-non-utf-8-host-locale-codex-jsonl-parser-crash-310) for the full failure mode. |
+| `CODEX_PLUGIN_TELEMETRY_DISABLED` | Suppress the JSONL telemetry stream entirely (default off — telemetry is on, local-only, at `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`). Set to `1`, `true`, or `yes` to skip every event write. PR-9.1. |
+| `CODEX_PLUGIN_TELEMETRY_DEBUG` | When `=1`, surface swallowed telemetry write errors on stderr instead of silently dropping them. Useful for diagnosing missing-event reports — leave unset in normal use. PR-9.1. |
 
 ## User-level config defaults (PR-7.7, #213)
 
