@@ -1,5 +1,8 @@
 # Codex plugin for Claude Code
 
+> **opnd-io fork**, derived from [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) under the Apache License 2.0.
+> Tracks the upstream and adds the v2.0.0 split-train hardening (stability / Windows / auth / sandbox-default-omit / Codex-home-isolation) plus the v2.1.0 observability + UX changes (JSONL telemetry with trace.id, `/codex:status --tail/--watch`, user-level config defaults, opt-in completion bell, non-UTF-8 locale mitigation, non-interactive command fallbacks). See [`NOTICE`](NOTICE) and [`plugins/codex/CHANGELOG.md`](plugins/codex/CHANGELOG.md) for the full modification log.
+
 Use Codex from inside Claude Code for code reviews or to delegate tasks to Codex.
 
 This plugin is for Claude Code users who want an easy way to start using Codex from the workflow
