@@ -322,3 +322,110 @@ Known investigations in progress (not yet fixed in v2.0.0):
 - #277 review `--background` hang 2-30 min on Windows + CLI 0.125+
 - #310 zh-TW / non-UTF-8 locale Big5 JSONL parser crash (upstream codex CLI)
 - #141 macOS SCDynamicStore NULL panic inside Antigravity sandbox
+
+---
+
+## A. Diagnostic data to gather for the spike-grade open issues
+
+Sections #1-#13 ship plugin-side fixes / mitigations. The remaining items in the "Known investigations" list are **spike-grade** — root cause is in the OS layer, the codex CLI, or an upstream protocol, and the fix needs a dedicated investigation we have not yet been able to run. While that work is pending, the most useful thing a reporter can do is capture diagnostic data the next investigation can replay against. This section enumerates what to capture per issue so the eventual fix lands faster.
+
+### #295 — Windows `CreateProcessAsUserW failed: 1920`
+
+The codex CLI's elevated sandbox path on Windows tries to launch a child as the impersonated user; Windows error 1920 ("the file cannot be accessed by the system") fires intermittently. We do not have a clean repro on a non-elevated dev box.
+
+Capture before filing:
+
+```powershell
+# 1. Exact codex CLI + plugin version + OS build.
+codex --version
+node "$env:USERPROFILE\.claude\plugins\cache\openai-codex\codex\1.0.2\scripts\codex-companion.mjs" setup --json | Select-Object -First 30
+[Environment]::OSVersion
+
+# 2. Effective sandbox config the plugin sees.
+type "$env:USERPROFILE\.codex\config.toml"
+
+# 3. The full stderr trace from the failing run, including the Win32 error.
+$env:CODEX_PLUGIN_TELEMETRY_DEBUG = "1"   # surface swallowed write errors
+node "$env:USERPROFILE\.claude\plugins\cache\openai-codex\codex\1.0.2\scripts\codex-companion.mjs" task --sandbox workspace-write "smallest reproducer you can find" 2>&1 | Tee-Object -FilePath repro.log
+
+# 4. Token state at failure (sanity check — auth.json must exist + be readable).
+Get-ChildItem "$env:USERPROFILE\.codex\auth.json"
+Get-ChildItem "$env:USERPROFILE\.codex\claude-code\auth.json"  # if v2.0.0+
+```
+
+Workaround until the spike: omit `--sandbox workspace-write` and let codex pick the unelevated default. The plugin's v2.0.0 sandbox-inherit behavior (BREAKING #1 in MIGRATION_v2.0.md) means most users do not need the explicit flag.
+
+### #277 — Windows `review --background` hang 2-30 min on CLI 0.125+
+
+Background review on Windows occasionally pins for minutes before producing output. Bisection across 5 codex CLI versions in the v2.0.0 sprint did not isolate a single regression revision, so the cause is most likely environmental (Defender / antivirus scanning the spawned child, NTFS lock contention on the broker pipe, or Windows pipe scheduling under load) rather than a CLI regression.
+
+Capture before filing:
+
+```powershell
+# 1. /codex:status while the hang is in progress — the new --tail/--watch
+#    surfaces both the job log and the v2.1.0 telemetry traceId.
+node "$env:USERPROFILE\.claude\plugins\cache\openai-codex\codex\1.0.2\scripts\codex-companion.mjs" status <jobId> --watch --tail-lines 100 | Tee-Object -FilePath hang.log
+
+# 2. Exit codex Desktop + AV exclusion on the plugin home and re-run. If the
+#    hang vanishes with AV bypassed, that is the cause and the user needs to
+#    add an AV exclusion (not a plugin bug).
+Add-MpPreference -ExclusionPath "$env:USERPROFILE\.codex"
+Add-MpPreference -ExclusionPath "$env:USERPROFILE\.claude\plugins\data\codex-openai-codex"
+
+# 3. Capture the broker process tree while hung — useful to tell whether
+#    the child is alive but blocked on I/O vs already-dead-PID-not-reaped.
+Get-Process node, codex | Format-List Id, ParentProcessId, CPU, StartTime
+```
+
+Workaround: `/codex:review --wait` (foreground) usually does not hit the hang because there is no broker pipe in play.
+
+### #6.7 — MCP elicitation forwarding + tool-loop guard
+
+The MCP protocol's `elicitation/create` request flows from server → host; the plugin's tool-loop guard needs to know when an elicitation is in-flight so it does not interrupt mid-question. Fix needs a protocol fixture matrix (server/host pairs that emit valid + malformed elicitation frames) which we do not have yet.
+
+Capture before filing:
+
+```bash
+# 1. The exact MCP server you connected. The codex CLI talks to multiple
+#    server kinds (filesystem, web, custom) and elicitation behavior
+#    differs.
+codex mcp ls 2>&1 | head -40
+
+# 2. The full JSONL trace from the broker for the failing turn. The PR-9.1
+#    telemetry stream includes traceId so events from one logical run can
+#    be grepped out:
+jq -c 'select(.traceId == "<traceId-from-failing-job>")' \
+  ~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl
+
+# 3. The verbatim elicitation request the server sent (look for
+#    "elicitation/create" in the per-job log file).
+grep -A 20 "elicitation/create" \
+  ~/.claude/plugins/data/codex-openai-codex/state/<workspace>/jobs/<job-id>.log
+```
+
+Workaround: avoid MCP servers that issue elicitation until the fixture matrix lands. The plugin still works without the loop-guard fix; it is only the protocol-spec-compliant behavior that is missing.
+
+### #141 — macOS SCDynamicStore NULL panic inside Antigravity sandbox
+
+Apple Silicon + the Antigravity sandbox occasionally fails to bring up the SCDynamicStore, panicking the codex CLI. Root cause is in Antigravity itself — outside the plugin's reach.
+
+Capture before filing:
+
+```bash
+# 1. Apple Silicon model + OS build + Antigravity version
+system_profiler SPHardwareDataType | grep -E "Model|Chip"
+sw_vers
+defaults read /Applications/Antigravity.app/Contents/Info.plist CFBundleShortVersionString
+
+# 2. The codex CLI stderr at panic — include the full SCDynamicStore trace
+codex exec "smallest repro" 2>&1 | tee repro.log
+
+# 3. Whether the same prompt works in a non-sandboxed shell. If yes, the
+#    bug is Antigravity's, not codex's.
+```
+
+Workaround: run codex outside the Antigravity sandbox (system Terminal.app / iTerm2). The plugin behaves identically; it is only the panicking child that needs the unsandboxed environment.
+
+### Why these are not yet plugin-side fixed
+
+For each: the plugin would have to either (a) detect the environment condition on its own and refuse to spawn (hostile UX — the user wants the operation to work, not to be told "no"), or (b) work around the OS / protocol bug with shims that the upstream may fix at any time, leaving the plugin carrying dead workaround code. The capture-and-file path is the lowest-risk move while the upstreams catch up.
