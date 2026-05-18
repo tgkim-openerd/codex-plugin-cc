@@ -128,6 +128,12 @@ These all default to v1.x behavior unless you explicitly opt in:
 | `CODEX_BROKER_IDLE_INTERVAL_MS` | Override broker idle poll interval (default 2 min, was 5 min in v1.x) |
 | `CODEX_FINALIZING_PHASE_TIMEOUT_MS` | Override the finalizing-phase fail-fast timeout (default 5 min; disable with `0`) |
 
+## New v2.1.0 env vars
+
+| Env var | Effect |
+|---|---|
+| `CODEX_PLUGIN_PRESERVE_LOCALE` | When `=1`, disable the v2.1.0 non-UTF-8 locale mitigation (PR-4.5, #310). The plugin passes the host `LANG` / `LC_ALL` through to spawned codex children even on non-UTF-8 systems, restoring the upstream JSONL parser crash risk in exchange for localized codex output. See [`TROUBLESHOOTING.md` #13](TROUBLESHOOTING.md#13-non-utf-8-host-locale-codex-jsonl-parser-crash-310) for the full failure mode. |
+
 ---
 
 ## FAQ
