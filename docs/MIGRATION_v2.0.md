@@ -65,6 +65,20 @@ If you want plugin sessions in a different custom location:
 export CODEX_HOME=/path/to/custom/codex
 ```
 
+> **⚠ Auth-token side effect of BREAKING #2.** `codex login` writes `auth.json` into the codex home it sees in the current shell — by default `~/.codex/auth.json`. The plugin's spawned codex looks in **`~/.codex/claude-code/auth.json`** instead, so an unmigrated v1.x setup will keep returning `loggedIn: false` from `/codex:setup` even after a successful `codex login`. Two equivalent fixes:
+>
+> ```bash
+> # Option A — copy your existing token into the plugin home (one-time)
+> cp ~/.codex/auth.json ~/.codex/claude-code/auth.json
+> ```
+>
+> ```bash
+> # Option B — login directly into the plugin home (also re-runnable after rotation)
+> CODEX_HOME="$HOME/.codex/claude-code" codex login
+> ```
+>
+> Subsequent `codex login` invocations from a normal shell only refresh `~/.codex/auth.json`, so plan to re-copy after every rotation — or pin the plugin to the shared home with `CODEX_PLUGIN_USE_DEFAULT_HOME=1` if you do not need history isolation. See also [TROUBLESHOOTING.md #12](TROUBLESHOOTING.md#12-plugin-says-loggedin-false-after-a-successful-codex-login-v200-home-isolation).
+
 ### What is NOT BREAKING
 
 - `clientInfo.name` now reports `codex-plugin-cc` instead of `Claude Code` (fixes gpt-5.5 400 invalid_request_error) — no user-facing surface change
@@ -80,6 +94,7 @@ export CODEX_HOME=/path/to/custom/codex
 
 - [ ] Decide whether to opt-out of the sandbox default change. Most users will benefit from the new default; opt-out is needed if you have CI / automation that depends on the hard-coded `read-only` / `workspace-write` behavior.
 - [ ] Decide whether to keep the v1.x shared `~/.codex/` home. If you frequently resume plugin-launched threads in Codex Desktop, set `CODEX_PLUGIN_USE_DEFAULT_HOME=1`.
+- [ ] **Migrate your OpenAI auth token to the plugin home.** `codex login` writes only to `~/.codex/auth.json`, so the plugin will report `loggedIn: false` from `/codex:setup` until you copy it: `cp ~/.codex/auth.json ~/.codex/claude-code/auth.json` (or run `CODEX_HOME="$HOME/.codex/claude-code" codex login` to write directly). Repeat after every token rotation, or skip both by setting `CODEX_PLUGIN_USE_DEFAULT_HOME=1`. See [TROUBLESHOOTING.md #12](TROUBLESHOOTING.md#12-plugin-says-loggedin-false-after-a-successful-codex-login-v200-home-isolation) for the full failure mode.
 - [ ] (Optional) Migrate existing plugin sessions to the new home: `cp -r ~/.codex/sessions/ ~/.codex/claude-code/sessions/`. Without this, your v1.x session history stays in the old location and is invisible to v2 plugin commands.
 
 ### Per-environment
