@@ -128,6 +128,12 @@ These all default to v1.x behavior unless you explicitly opt in:
 | `CODEX_BROKER_IDLE_INTERVAL_MS` | Override broker idle poll interval (default 2 min, was 5 min in v1.x) |
 | `CODEX_FINALIZING_PHASE_TIMEOUT_MS` | Override the finalizing-phase fail-fast timeout (default 5 min; disable with `0`) |
 
+## New v2.1.0 env vars
+
+| Env var | Effect |
+|---|---|
+| `CODEX_PLUGIN_BELL_ON_COMPLETE` | When `=1`, write a single ASCII BEL (`\x07`) to stderr at every job terminal state (completed / failed / cancelled / terminated / timeout). The bell relies on the terminal emulator's own "audible bell" setting — silent if the emulator has bell turned off. Default: off (no surprise audio). PR-7.4 (#134). |
+
 ---
 
 ## FAQ
